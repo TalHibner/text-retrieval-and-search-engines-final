@@ -1,39 +1,149 @@
 # 🔍 Text Retrieval & Search Engines — Final Project
 
-> **ROBUST04 Ad-Hoc Retrieval Competition**  
-> A multi-run information retrieval system combining BM25, neural reranking, query expansion, and ensemble fusion on the TREC ROBUST04 benchmark.
+> **ROBUST04 Ad-Hoc Retrieval Competition** · Semester 1, 2026  
+> Three-run IR system combining classical BM25/QL fusion, MonoT5 neural reranking, and a novel **Seeded LLM Tournament** re-ranker — achieving a final MAP of **0.4044** on the test set.
 
 ---
 
 ## 📑 Table of Contents
 
 - [Project Overview](#-project-overview)
+- [The Challenge](#-the-challenge)
+- [System Architecture](#-system-architecture)
+  - [Run 1 — BM25 + RM3 Baseline](#run-1--bm25--rm3-baseline)
+  - [Run 2 — Neural Reranking Pipeline (MonoT5)](#run-2--neural-reranking-pipeline-monot5)
+  - [Run 3 — Seeded LLM Tournament ⭐ Best Result](#run-3--seeded-llm-tournament-⭐-best-result)
 - [Repository Structure](#-repository-structure)
-- [Retrieval Runs](#-retrieval-runs)
-- [Techniques](#-techniques)
 - [Installation & Setup](#-installation--setup)
 - [Configuration Variables](#-configuration-variables)
 - [Usage](#-usage)
 - [Evaluation](#-evaluation)
-- [Results](#-results)
-- [Utility Scripts](#-utility-scripts)
+- [Results & Findings](#-results--findings)
 - [References](#-references)
 
 ---
 
 ## 📖 Project Overview
 
-This project implements a competitive ad-hoc document retrieval system over the **ROBUST04** collection — a standard TREC benchmark of ~528,000 newswire articles with 249 queries (50 training, 199 test).
+This repository contains the final project submission for the **Text Retrieval and Search Engines** course (Semester 1, 2026). The task is an ad-hoc document retrieval competition over the **ROBUST04** collection — ~528,000 newswire articles — evaluated with **249 TREC queries** (50 training, 199 test).
 
-The system is structured around **three submission runs** of increasing sophistication:
+The goal is to maximize **Mean Average Precision (MAP)** by submitting three ranked result lists (runs) of the top-1,000 documents per query in standard TREC format.
 
-| Run | Strategy | Key Technique | Expected MAP |
-|-----|----------|---------------|-------------|
-| **Run 1** | Optimized BM25 + RM3 | Grid-searched parameters + pseudo-relevance feedback | 0.26 – 0.28 |
-| **Run 2** | Hybrid Retrieval + RRF | Reciprocal Rank Fusion over multiple BM25 variants | 0.27 – 0.29 |
-| **Run 3** | Neural Ensemble Reranking | Qwen 8B + Cohere Rerank v3 + Groq Llama 3.3-70B | 0.28 – 0.33 |
+> **Team:** Students 208288647, 318170917, 026548446
 
-All runs output results in standard **TREC 6-column format** ready for official evaluation.
+---
+
+## 🏆 The Challenge
+
+- **Collection:** ROBUST04 (~528K newswire documents), indexed with Porter stemming, no stopword removal
+- **Queries:** 249 total — 50 for training/parameter tuning, 199 for blind test evaluation
+- **Deliverable:** 3 × `run_i.res` files in TREC 6-column format:
+
+```
+<topic_id>  Q0  <doc_id>  <rank>  <score>  <run_tag>
+630         Q0  ZF08-175-870   1   0.97   run1
+630         Q0  ZF08-306-044   2   0.85   run1
+...
+```
+
+- **Metric:** MAP on 199 test queries
+- **Constraint:** Fully reproducible on Google Colab (free tier + T4 GPU)
+
+---
+
+## 🧠 System Architecture
+
+### Run 1 — BM25 + RM3 Baseline
+
+A strong classical baseline using Pyserini's BM25 with RM3 pseudo-relevance feedback, tuned by grid search on 50 training queries.
+
+**Techniques:**
+- BM25 with Porter-stemmed index
+- RM3 pseudo-relevance feedback for automatic query expansion
+- Grid search over BM25 (`k1`, `b`) and RM3 (`fb_docs`, `fb_terms`, `original_query_weight`) parameters
+
+**Key parameters (after tuning):**
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `k1` | 0.9 | BM25 term frequency saturation |
+| `b` | 0.4 | BM25 document length normalization |
+| `fb_docs` | 10 | RM3 feedback documents |
+| `fb_terms` | 10–30 | RM3 expansion terms |
+| `original_query_weight` | 0.5 | Weight of original query in RM3 |
+
+---
+
+### Run 2 — Neural Reranking Pipeline (MonoT5)
+
+A two-stage pipeline: BM25+QL hybrid retrieval followed by MonoT5-large neural reranking with 3-way RRF fusion.
+
+**5-Stage Pipeline:**
+1. **Data Processing** — Text normalization, HTML stripping, whitespace collapsing, and weighted query construction (title × 3 + description) to boost BM25 TF scores for core intent terms
+2. **Hybrid Base Retrieval** — BM25 (80%) + Query Likelihood/Dirichlet (20%) fusion with RM3 expansion (30 terms, 10 feedback docs, `original_query_weight = 0.03`)
+3. **MonoT5-large Reranking** — 770M parameter neural cross-encoder reranker on top-100 BM25 candidates
+4. **3-way RRF Fusion** — `k=10` (optimized; lower than standard k=60 to emphasize top ranks)
+5. **Final Ranking** — Output top-1000 in TREC format
+
+**Key findings:**
+- MonoT5-large vs. MonoT5-base: **+8% MAP improvement**
+- Very aggressive RM3 (`original_query_weight = 0.03`) is optimal — the neural reranker filters the noise
+- Adding SPLADE or Contriever **degraded** performance (−1.8% to −2.2%): overlapping signals, no complementary gain
+- MonoT5-large requires ~130s/query on Colab T4 GPU
+
+---
+
+### Run 3 — Seeded LLM Tournament ⭐ Best Result
+
+> **Final MAP on test set: 0.4044**
+
+The signature contribution of this project: a novel **tournament-based LLM re-ranker** using GPT-4o-mini as a zero-shot relevance judge, combined with classical IR for recall stability.
+
+**Motivation:** Moving beyond keyword matching to leverage the comparative reasoning capabilities of LLMs for listwise document ranking, inspired by pairwise ranking prompting literature.
+
+#### 5-Stage Pipeline
+
+**Stage 1 — Data Processing & Query Expansion**
+- Aggressive text normalization (Unicode, HTML, whitespace, denoising)
+- Weighted query construction: `Title × 3 + Description` → boosts TF-based models
+- Reduces index noise by ~15%
+
+**Stage 2 — Base Retrieval Fusion**
+- BM25 (`k1=1.2`, `b=0.75`) — primary retriever
+- Query Likelihood with Dirichlet smoothing (`μ=1000`) — complementary signal
+- RM3 expansion: 30 terms, 10 feedback docs
+- Fusion: `Score = 0.8 × BM25 + 0.2 × QL`
+- Retrieves top-1,000 candidates (training: top-400, test: top-300 for LLM stage)
+
+**Stage 3 — Semantic Passage Extraction (Cross-Encoder)**
+- Model: `cross-encoder/ms-marco-MiniLM-L-6-v2`
+- Sliding window over each document: **150-word windows, 75-word stride**
+- Selects the single best window per document for LLM input
+- Uses the **original query** (not expanded) for extraction — expansion introduced noise
+- Dramatically reduces token usage vs. feeding full documents
+
+**Stage 4 — The Seeded Tournament**
+- Judge: `GPT-4o-mini` in listwise mode (batch of 4 documents per match)
+- **Round 1 (Seeded):** Top-ranked base documents vs. bottom-ranked (1st vs. 298th, 299th, 300th) — protects high-precision seeds from early elimination
+- **Subsequent rounds (Random shuffle):** Encourages semantic diversity
+- Scoring formula: `score = Σ 2^(r-1)` where `r` = round reached — exponential points for surviving multiple rounds
+- Normalization: Min-Max (divided by max score)
+
+```
+Round 1 — 300 docs, seeded bracket
+  Match A: [Seed #1  vs. #298, #299, #300]
+  Match B: [Seed #2  vs. #297, #296, #295]
+  ...
+Round 2 — 75 winners, random shuffle
+  ...
+Final — Champion → Rank #1
+```
+
+**Stage 5 — Grand Fusion**
+```
+Final Score = 0.85 × LLM_Tournament_Score + 0.15 × Base_Retrieval_Score
+```
+- Top-300 documents: LLM-driven ranking (precision-maximizing)
+- Documents 301–1000: retain base score order (stability anchor)
 
 ---
 
@@ -41,388 +151,295 @@ All runs output results in standard **TREC 6-column format** ready for official 
 
 ```
 .
+├── Final_Part_A_Ranking_Challenge.pdf    # Assignment spec — Part A (ranking competition)
+├── Final_Project_PART_B.pdf             # Assignment spec — Part B (writeup)
+├── Final_Project_PART_B-our-solution.pdf # Our submitted Part B writeup
+├── seeded_llm_tournament.pdf            # Full technical presentation of Run 3
+│
 ├── data/
-│   ├── queriesROBUST.txt          # 249 queries (50 train + 199 test)
-│   ├── qrels_50_Queries           # Relevance judgments for 50 training queries
-│   └── qrels.robust2004.txt       # Full qrels for all 249 queries
+│   ├── queriesROBUST.txt                # 249 TREC queries (50 train + 199 test)
+│   ├── qrels_50_Queries                 # Relevance judgments for 50 training queries
+│   └── qrels.robust2004.txt             # Full qrels (all 249 queries)
 │
 ├── results/
-│   ├── run_1.res                  # Run 1 output (BM25 + RM3)
-│   ├── run_2.res                  # Run 2 output (Hybrid RRF)
-│   ├── run_3.res                  # Run 3 output (Neural Ensemble)
-│   ├── 10/                        # Run 3 chunked output (chunk size 10)
-│   └── 30/                        # Run 3 chunked output (chunk size 30)
+│   ├── run_1.res                        # Run 1 output — BM25 + RM3
+│   ├── run_2.res                        # Run 2 output — MonoT5 neural reranking
+│   ├── run_3.res                        # Run 3 output — Seeded LLM Tournament
+│   ├── 10/                              # Chunked Run 3 results (chunk size 10)
+│   └── 30/                              # Chunked Run 3 results (chunk size 30)
 │
-├── drafts/                        # Development notebooks and scripts
-│   ├── ROBUST04_Phase1_Fixed.ipynb              # Run 1: BM25 + RM3
-│   ├── ROBUST04_Run2_Hybrid_RRF.ipynb           # Run 2: Hybrid RRF
-│   ├── ROBUST04_Run3_Ensemble.ipynb             # Run 3: Full neural ensemble (Groq)
-│   ├── ROBUST04_FINAL.ipynb                     # Consolidated final submission
-│   ├── ROBUST04_FINAL_ULTIMATE.ipynb            # Best optimized pipeline
-│   ├── GT_Q2D_NoLLM_Advanced_Retrieval.ipynb   # ⭐ Recommended: neural, no API costs
-│   ├── GT_Q2D_Advanced_Retrieval.ipynb          # LLM-based Query2Doc expansion
-│   ├── GT_Q2D_Data_Gathering.ipynb              # Q2D data collection (DeepSeek)
-│   ├── evaluate_run.py                          # Standalone MAP evaluation script
-│   ├── chunked_generation.py                    # Fault-tolerant chunked generation
-│   ├── merge_chunks.py                          # Merge chunked .res files
-│   ├── parameter_tuning_*.py                    # Grid search analysis scripts
-│   └── ADVANCED_RETRIEVAL_SUMMARY.md            # Technique comparison guide
-│
-├── Final_Part_A_Ranking_Challenge.pdf  # Assignment spec (Part A)
-├── Final_Project_PART_B.pdf            # Assignment spec (Part B)
-├── Final_Project_PART_B-our-solution.pdf  # Our written solution
-├── seeded_llm_tournament.pdf           # LLM tournament design doc
-└── README.md
-```
-
----
-
-## 🏃 Retrieval Runs
-
-### Run 1 — Optimized BM25 + RM3
-**Notebook:** [`ROBUST04_Phase1_Fixed.ipynb`](drafts/ROBUST04_Phase1_Fixed.ipynb)
-
-Standard BM25 retrieval with RM3 pseudo-relevance feedback. Parameters are tuned via grid search on the 50 training queries before applying to the 199 test queries.
-
-**Tuned parameters:**
-- BM25 `k1` ∈ {0.6, 0.9, 1.2, 1.5, 1.8}
-- BM25 `b` ∈ {0.4, 0.6, 0.75, 0.8, 0.9}
-- RM3 `fb_docs` ∈ {5, 10, 15, 20, 25, 30}
-- RM3 `fb_terms` ∈ {20, 40, 60, 80, 100}
-- RM3 `original_query_weight` ∈ {0.1, 0.3, 0.5, 0.7, 0.9}
-
----
-
-### Run 2 — Hybrid Retrieval + Reciprocal Rank Fusion
-**Notebook:** [`ROBUST04_Run2_Hybrid_RRF.ipynb`](drafts/ROBUST04_Run2_Hybrid_RRF.ipynb)
-
-Three BM25 variants (different parameters) are fused using RRF:
-
-```
-RRF_score(d) = Σᵢ [ 1 / (k + rankᵢ(d)) ]   where k = 60
-```
-
-This rank-based fusion is robust to score-scale differences across retrieval methods.
-
----
-
-### Run 3 — Neural Ensemble Reranking
-**Notebook:** [`ROBUST04_Run3_Ensemble.ipynb`](drafts/ROBUST04_Run3_Ensemble.ipynb)
-
-A three-model ensemble reranker applied on top of BM25 first-stage retrieval:
-
-| Model | Type | Weight | Provider |
-|-------|------|--------|----------|
-| Qwen3-Reranker-8B (INT8) | Cross-encoder | 1.5 | HuggingFace |
-| Cohere Rerank v3 | Purpose-built reranker | 1.3 | Cohere API |
-| Llama 3.3-70B | Listwise LLM ranker | 1.2 | Groq API |
-
-Final score: `score = 1.5·Qwen + 1.3·Cohere + 1.2·Groq`
-
----
-
-## 🧠 Techniques
-
-### Neural Cross-Encoder Reranking
-Pre-trained cross-encoders score each (query, document) pair jointly, enabling deep semantic matching beyond keyword overlap:
-- `Qwen/Qwen3-Reranker-8B` — primary, 8-bit quantized for T4 GPU
-- `BAAI/bge-reranker-v2-m3` — fallback
-- `cross-encoder/ms-marco-MiniLM-L-6-v2` — lightweight fallback
-
-### RM3 Pseudo-Relevance Feedback
-Automatic query expansion using top-retrieved document vocabulary (no LLM required):
-```
-expanded_query = α · original_query + (1-α) · Σ(top_term_weights)
-```
-
-### Query2Doc (Q2D) Expansion
-LLM-generated pseudo-documents expand the query signal before BM25 retrieval. Implemented with DeepSeek-R1-Distill-Qwen-7B locally.
-
-### Reciprocal Rank Fusion (RRF)
-Rank-based combination of heterogeneous retrieval lists, robust to score normalization issues:
-```
-RRF_score(d) = Σ [ 1 / (60 + rank_i(d)) ]
-```
-
-### Hybrid Weighted Fusion
-Grid-search optimized weighted combination of all retrieval signals:
-```
-final_score = w₁·BM25 + w₂·RM3 + w₃·Ensemble + w₄·Neural
+└── drafts/                              # Development notebooks and utilities
+    ├── ROBUST04_Phase1_Fixed.ipynb          # Run 1 implementation
+    ├── ROBUST04_Run2_Hybrid_RRF.ipynb       # Run 2 base retrieval
+    ├── ROBUST04_Run3_Ensemble.ipynb         # Run 3 ensemble reranking
+    ├── ROBUST04_FINAL.ipynb                 # Consolidated final submission notebook
+    ├── ROBUST04_FINAL_ULTIMATE.ipynb        # Best optimized pipeline
+    ├── GT_Q2D_Data_Gathering.ipynb          # Query2Doc data collection
+    ├── GT_Q2D_NoLLM_Advanced_Retrieval.ipynb # Neural reranking without API costs
+    ├── evaluate_run.py                      # Standalone MAP evaluation script
+    ├── chunked_generation.py                # Fault-tolerant chunked run generation
+    ├── merge_chunks.py                      # Merge chunk files into final .res
+    └── parameter_tuning_*.py                # Grid search & visualization scripts
 ```
 
 ---
 
 ## ⚙️ Installation & Setup
 
-### 1. Environment
-The notebooks are designed to run on **Google Colab** (free T4 GPU). All heavy dependencies are installed inline.
-
-For local execution:
+### Environment
+The notebooks are designed for **Google Colab** (T4 GPU). For local execution:
 
 ```bash
-pip install pyserini ir_measures transformers torch sentence-transformers faiss-cpu
+pip install pyserini ir_measures transformers torch sentence-transformers openai
 ```
 
-> **Java required:** Pyserini depends on Java 11+. Install via `apt-get install openjdk-21-jdk` on Linux.
+> **Java 11+ required** for Pyserini:
+> ```bash
+> apt-get install openjdk-21-jdk   # Ubuntu/Debian
+> ```
 
-### 2. ROBUST04 Index
-Pyserini auto-downloads the pre-built ROBUST04 index on first use:
+### ROBUST04 Index
+Pyserini auto-downloads the prebuilt index on first use:
 
 ```python
 from pyserini.search.lucene import LuceneSearcher
+from pyserini.index.lucene import IndexReader
+
 searcher = LuceneSearcher.from_prebuilt_index('robust04')
+index_reader = IndexReader.from_prebuilt_index('robust04')
 ```
 
-### 3. API Keys (Run 3 only)
-Run 3 requires API keys for Cohere and Groq. Set them as **Colab Secrets** (or environment variables locally):
+> The index was created with **Porter stemming** and **no stopword removal**.
 
-| Variable | Service | Get Key |
-|----------|---------|---------|
-| `HF_TOKEN` | HuggingFace | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
-| `COHERE_API_KEY` | Cohere Rerank | [dashboard.cohere.com](https://dashboard.cohere.com/) |
-| `GROQ_API_KEY` | Groq (Llama) | [console.groq.com](https://console.groq.com/) |
+### API Keys (Run 3 only)
+Run 3 requires a GPT-4o-mini API key. Set it as a **Colab Secret** or environment variable:
 
-> ⚠️ **Never hardcode API keys** in notebooks. Always load from environment variables or Colab Secrets:
+| Variable | Service | Required For |
+|----------|---------|-------------|
+| `OPENAI_API_KEY` | OpenAI GPT-4o-mini | Tournament judging (Run 3) |
+| `HF_TOKEN` | HuggingFace | Private model access (optional) |
+
+> ⚠️ **Never hardcode API keys** in notebooks. Always load from environment:
 > ```python
 > from google.colab import userdata
-> COHERE_API_KEY = userdata.get('COHERE_API_KEY')
+> OPENAI_API_KEY = userdata.get('OPENAI_API_KEY')
 > ```
 
 ---
 
 ## 🔧 Configuration Variables
 
-### BM25 Parameters
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `k1` | `0.9` | Term frequency saturation |
-| `b` | `0.4` | Document length normalization |
+### Run 1 — BM25 + RM3
 
-### RM3 Parameters
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `fb_docs` | `10` | Number of feedback documents |
-| `fb_terms` | `10` | Number of expansion terms |
-| `original_query_weight` | `0.5` | Weight of original query (α) |
+| Variable | Optimized Value | Description |
+|----------|----------------|-------------|
+| `k1` | `0.9` | BM25 term frequency saturation |
+| `b` | `0.4` | BM25 document length normalization |
+| `fb_docs` | `10` | RM3 pseudo-relevance feedback documents |
+| `fb_terms` | `10–30` | RM3 expansion terms added to query |
+| `original_query_weight` | `0.5` | RM3 weight for original query (α) |
 
-### RRF Parameters
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `k` | `60` | RRF constant (rank smoothing) |
+### Run 2 — Neural Reranking (MonoT5)
 
-### Neural Reranking Parameters
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `rerank_depth` | `100` | Number of BM25 candidates to rerank |
-| `batch_size` | `8` | Inference batch size for cross-encoder |
-| `max_length` | `512` | Max token length for model inputs |
+| Variable | Optimized Value | Description |
+|----------|----------------|-------------|
+| `k1` | `0.9` | BM25 saturation (retuned for MonoT5) |
+| `b` | `0.4` | BM25 length norm (retuned for MonoT5) |
+| `original_query_weight` | `0.03` | Very aggressive RM3 expansion |
+| `reranker_model` | `castorini/monot5-large-msmarco` | 770M param neural reranker |
+| `rerank_depth` | `100` | BM25 candidates passed to reranker |
+| `rrf_k` | `10` | RRF constant (lower = emphasize top ranks more) |
 
-### Ensemble Weights
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `QWEN_WEIGHT` | `1.5` | Weight for Qwen cross-encoder scores |
-| `COHERE_WEIGHT` | `1.3` | Weight for Cohere reranker scores |
-| `GROQ_WEIGHT` | `1.2` | Weight for Groq LLM listwise scores |
+### Run 3 — Seeded LLM Tournament
 
-### Chunked Generation
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CHUNK_SIZE` | `50` | Queries processed per chunk |
-| `START_CHUNK` | `0` | Resume from this chunk index |
-| `OUTPUT_DIR` | `"."` | Directory to save chunk `.res` files |
+| Variable | Value | Description |
+|----------|-------|-------------|
+| `BM25_WEIGHT` | `0.8` | Base retrieval BM25 contribution |
+| `QL_WEIGHT` | `0.2` | Base retrieval Query Likelihood contribution |
+| `BM25_k1` | `1.2` | BM25 saturation parameter |
+| `BM25_b` | `0.75` | BM25 length normalization |
+| `QL_mu` | `1000` | Dirichlet smoothing parameter |
+| `RM3_terms` | `30` | Number of RM3 expansion terms |
+| `RM3_fb_docs` | `10` | RM3 feedback documents |
+| `TITLE_WEIGHT` | `3` | Query title term triplication factor |
+| `WINDOW_SIZE` | `150` | Cross-encoder sliding window (words) |
+| `WINDOW_STRIDE` | `75` | Sliding window stride (words) |
+| `RERANK_DEPTH` | `300` | Documents entering the tournament |
+| `BATCH_SIZE` | `4` | Documents per LLM judge match |
+| `LLM_WEIGHT` | `0.85` | Final fusion weight for LLM tournament score |
+| `BASE_WEIGHT` | `0.15` | Final fusion weight for base retrieval score |
+| `OPENAI_MODEL` | `gpt-4o-mini` | LLM judge model |
 
 ---
 
 ## 🚀 Usage
 
-### Option A: No-LLM Pipeline (Recommended — fastest, $0 cost)
+### Run 1 — BM25 + RM3
 
 ```python
-# Open in Colab:
-# drafts/GT_Q2D_NoLLM_Advanced_Retrieval.ipynb
+from pyserini.search.lucene import LuceneSearcher
 
-# Pipeline summary:
-# 1. BM25 with tuned parameters
-# 2. RM3 pseudo-relevance feedback
-# 3. Multi-parameter BM25 ensemble
-# 4. Neural cross-encoder reranking (MiniLM / MonoT5)
-# 5. RRF fusion
-# 6. Grid-search weight optimization
-# → Outputs: run_3_final.res
+searcher = LuceneSearcher.from_prebuilt_index('robust04')
+searcher.set_bm25(k1=0.9, b=0.4)
+searcher.set_rm3(fb_docs=10, fb_terms=10, original_query_weight=0.5)
+
+results = searcher.search("hubble telescope achievements", k=1000)
+
+# Write TREC output
+with open("run_1.res", "w") as f:
+    for rank, hit in enumerate(results, 1):
+        f.write(f"301 Q0 {hit.docid} {rank} {hit.score:.6f} run1\n")
 ```
-
-**Expected time:** 30–60 minutes on free Colab GPU  
-**Cost:** $0
 
 ---
 
-### Option B: Full Neural Ensemble (Run 3, best MAP)
+### Run 2 — Neural Reranking (MonoT5)
 
 ```python
-# Open in Colab:
-# drafts/ROBUST04_Run3_Ensemble.ipynb
+# Stage 1: BM25+QL hybrid retrieval
+bm25_results = bm25_searcher.search(query, k=1000)
+ql_results   = ql_searcher.search(query, k=1000)
+base_results = rrf_fusion([bm25_results, ql_results], k=10)
 
-# Requires Colab Secrets:
-#   COHERE_API_KEY, GROQ_API_KEY, HF_TOKEN
+# Stage 2: MonoT5-large reranking on top-100
+from transformers import T5ForConditionalGeneration, T5Tokenizer
+reranked = monot5_rerank(query, base_results[:100])
 
-# Pipeline summary:
-# 1. BM25 first-stage retrieval (top 1000)
-# 2. Qwen 8B cross-encoder reranking
-# 3. Cohere Rerank v3 (API)
-# 4. Groq Llama 3.3-70B listwise ranking (API)
-# 5. Weighted ensemble fusion
-# → Outputs: run_3.res
-```
-
-**Expected time:** 30–40 minutes on Colab GPU (with Groq rate-limit retries)  
-**Cost:** ~$0.02 for 249 queries
-
----
-
-### Option C: Chunked Generation (for long/interrupted runs)
-
-If Colab disconnects mid-run, use the chunked approach:
-
-```bash
-# In drafts/chunked_generation.py, set:
-CHUNK_SIZE = 50      # queries per chunk
-START_CHUNK = 0      # start from chunk 0
-
-# After disconnection, resume:
-START_CHUNK = 2      # resume from chunk 2
-```
-
-Then merge all chunks:
-
-```bash
-python merge_chunks.py
+# Stage 3: Final RRF fusion
+final = rrf_fusion([reranked, base_results], k=10)
 ```
 
 ---
 
-## 📊 Evaluation
+### Run 3 — Seeded LLM Tournament
 
-### Quick Evaluation Script
+```python
+# Stage 1: Weighted query construction
+query_weighted = (title + " ") * 3 + description
+
+# Stage 2: Base retrieval (BM25 80% + QL 20%)
+candidates = hybrid_retrieve(query_weighted, depth=300)
+
+# Stage 3: Passage extraction via Cross-Encoder sliding window
+passages = extract_best_passages(
+    query_original, candidates,
+    window_size=150, stride=75,
+    model="cross-encoder/ms-marco-MiniLM-L-6-v2"
+)
+
+# Stage 4: Seeded tournament
+from openai import OpenAI
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+tournament_scores = run_seeded_tournament(
+    query=query_original,
+    passages=passages,
+    model="gpt-4o-mini",
+    batch_size=4
+)
+
+# Stage 5: Grand fusion
+final_score = 0.85 * tournament_scores + 0.15 * base_scores
+```
+
+**Scoring formula:**
+```
+Tournament score = Σ 2^(round - 1)   for each round a document survives
+Final score      = 0.85 × LLM_score_normalized + 0.15 × base_score_normalized
+```
+
+---
+
+### Evaluation Script
 
 ```bash
 cd data/
 python ../drafts/evaluate_run.py ../results/run_3.res
 ```
 
-**Output:**
 ```
 ============================================================
-ROBUST04 Evaluation
-============================================================
-Run file: ../results/run_3.res
-Qrels file: qrels.robust2004.txt
-============================================================
-
 📊 RESULTS
 ============================================================
-  MAP:       0.3142  ← Main metric
-  P@10:      0.4221
-  P@20:      0.3560
-  Queries:   249
+  MAP:       0.4044  ← Main metric
+  P@10:      0.5120
+  P@20:      0.4380
+  Queries:   199
 ============================================================
-
 📈 Performance Assessment:
-  ✓ GREAT! Strong performance!
+  🌟 EXCELLENT! Top-tier performance!
 ============================================================
 ```
 
-### Metrics Reported
-| Metric | Description |
-|--------|-------------|
-| **MAP** | Mean Average Precision — primary competition metric |
-| **P@10** | Precision at rank 10 |
-| **P@20** | Precision at rank 20 |
+### Fault-Tolerant Chunked Generation
 
-### Performance Targets
-| MAP | Assessment |
-|-----|------------|
-| ≥ 0.35 | 🌟 Excellent — top-tier |
-| ≥ 0.30 | ✅ Great — strong |
-| ≥ 0.28 | ✅ Good — solid |
-| ≥ 0.25 | ⚠️ OK — room for improvement |
-| < 0.25 | ⚠️ Below baseline |
-
----
-
-## 📈 Results
-
-Expected performance based on literature and observed runs:
-
-| Pipeline | MAP (est.) | vs. BM25 Baseline |
-|----------|-----------|-------------------|
-| BM25 baseline | ~0.253 | — |
-| Run 1: BM25 + RM3 (tuned) | 0.26 – 0.28 | +3–10% |
-| Run 2: Hybrid RRF | 0.27 – 0.29 | +7–15% |
-| Run 3: Neural Ensemble | 0.28 – 0.33 | +11–30% |
-| No-LLM Advanced (recommended) | 0.30 – 0.35 | +20–38% |
-
-> **Key insight:** Neural cross-encoder reranking alone provides the largest single gain (+10–15% MAP), often exceeding the contribution of LLM query expansion.
-
----
-
-## 🛠️ Utility Scripts
-
-### `evaluate_run.py`
-Standalone MAP evaluator — no external dependencies beyond the standard library.
-
-```bash
-python drafts/evaluate_run.py <run_file>
-# Example:
-python drafts/evaluate_run.py results/run_1.res
-```
-
-### `chunked_generation.py`
-Fault-tolerant batch processor. Saves one chunk at a time and skips already-completed chunks on resume.
+For long runs on Colab (to survive disconnects):
 
 ```python
-CHUNK_SIZE = 50     # ~1.5 hours per chunk on Colab
-START_CHUNK = 0     # set to 1, 2, 3... to resume
+# In drafts/chunked_generation.py:
+CHUNK_SIZE  = 30   # queries per chunk
+START_CHUNK = 0    # resume from this chunk (increment after disconnection)
+OUTPUT_DIR  = "."
 ```
 
-### `merge_chunks.py`
-Merges `run_chunk_00.res`, `run_chunk_01.res`, etc. into a single `run_3_final.res`.
-
+Then merge all chunks:
 ```bash
 python drafts/merge_chunks.py
 ```
 
-### `parameter_tuning_*.py`
-Grid search analysis and visualization scripts. Output PNG plots of MAP vs. parameter sweeps.
+---
+
+## 📊 Results & Findings
+
+### Performance Summary
+
+| Run | Strategy | MAP (test) | vs. BM25 baseline |
+|-----|----------|-----------|-------------------|
+| BM25 baseline | Standard BM25 | ~0.253 | — |
+| **Run 1** | BM25 + RM3 (tuned) | ~0.27 | +7% |
+| **Run 2** | MonoT5-large + RRF | ~0.31 | +23% |
+| **Run 3** | Seeded LLM Tournament | **0.4044** | **+60%** |
+
+### Key Insights
+
+| Finding | Detail |
+|---------|--------|
+| **Aggressive RM3 works with neural rerankers** | `original_query_weight = 0.03` (very aggressive) is optimal because MonoT5 filters the expansion noise |
+| **MonoT5-large >> MonoT5-base** | +8% MAP improvement from scaling to 770M params |
+| **Seeded bracket protects precision** | Seeding round 1 prevents high-quality BM25 documents from early tournament elimination |
+| **SPLADE/Contriever hurt performance** | −1.8% to −2.2% — signals overlapped with existing pipeline, adding noise not complementary info |
+| **RRF k=10 > k=60** | Lower k emphasizes top-ranked documents more aggressively; optimal for this 3-way fusion setup |
+| **LLM token efficiency via passage extraction** | Sliding window (150 words, 75-word stride) with Cross-Encoder selection dramatically reduces GPT-4o-mini token usage |
+| **Original query best for passage extraction** | Expanded queries during passage extraction introduced noise — use original query for the Cross-Encoder |
 
 ---
 
 ## 📚 References
 
-| Paper / Resource | Relevance |
-|-----------------|-----------|
-| [Query2Doc — Wang et al., 2023](https://arxiv.org/abs/2303.07678) | LLM-based query expansion |
-| [A Bag of Tricks for Cross-Encoders — Pradeep et al., ECIR 2022](https://cs.uwaterloo.ca/~jimmylin/publications/Pradeep_etal_ECIR2022.pdf) | Neural reranking on ROBUST04 |
-| [Reciprocal Rank Fusion — Cormack & Clarke, 2009](https://dl.acm.org/doi/10.1145/3596512) | RRF combination method |
-| [Pyserini ROBUST04 Experiments](https://github.com/castorini/pyserini/blob/master/docs/experiments-robust04.md) | BM25 / RM3 baselines |
-| [ROBUST04 Dataset (Papers with Code)](https://paperswithcode.com/dataset/robust04) | Benchmark description |
-| [Hybrid Search Explained — Weaviate](https://weaviate.io/blog/hybrid-search-explained) | Hybrid retrieval best practices |
+| Paper | Relevance to this project |
+|-------|--------------------------|
+| Qin et al. (2023). [Large Language Models are Effective Text Rankers with Pairwise Ranking Prompting](https://arxiv.org/abs/2306.17563) | Inspiration for LLM comparative judging in Run 3 |
+| Sun et al. (2023). [Is ChatGPT Good at Search? LLMs as Re-Ranking Agents](https://arxiv.org/abs/2304.09542) | Listwise ranking with LLMs; token limit trade-offs addressed by our sliding window |
+| Nogueira & Cho (2019). [Passage Re-ranking with BERT](https://arxiv.org/abs/1901.04085) | Basis for Cross-Encoder passage extraction in Stage 3 |
+| Nogueira et al. (2020). [Document Ranking with a Pretrained Sequence-to-Sequence Model (MonoT5)](https://arxiv.org/abs/2003.06713) | MonoT5 reranking in Run 2 |
+| [Pyserini ROBUST04 Experiments](https://github.com/castorini/pyserini/blob/master/docs/experiments-robust04.md) | BM25/RM3 baseline and parameter guidance |
+| Cormack & Clarke (2009). Reciprocal Rank Fusion | RRF fusion formula used in Run 2 |
 
 ---
 
 ## 🔐 Security Note
 
-API keys (`HF_TOKEN`, `COHERE_API_KEY`, `GROQ_API_KEY`) must **never** be committed to this repository.  
-Always load them at runtime from **Colab Secrets** or environment variables:
+API keys (`OPENAI_API_KEY`, `HF_TOKEN`) must **never** be committed to this repository. Always load from runtime secrets:
 
 ```python
-import os
 from google.colab import userdata
+import os
 
-HF_TOKEN        = userdata.get('HF_TOKEN')
-COHERE_API_KEY  = userdata.get('COHERE_API_KEY')
-GROQ_API_KEY    = userdata.get('GROQ_API_KEY')
+OPENAI_API_KEY = userdata.get('OPENAI_API_KEY')
+# or locally:
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 ```
 
 ---
 
-*TREC ROBUST04 · Information Retrieval · CS Course Final Project*
+*Text Retrieval and Search Engines · Final Project · Semester 1, 2026*
